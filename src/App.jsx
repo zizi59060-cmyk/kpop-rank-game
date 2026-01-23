@@ -1114,8 +1114,6 @@ export default function App() {
                 setKnownByGroup={setKnownByGroup}
                 custom={custom}
                 setCustom={setCustom}
-                setCustom={setCustom}
-                setCustom={setCustom}
                 onBack={() => setScreen("version")}
                 onNext={() => setScreen("rank")}
               />
@@ -1130,20 +1128,12 @@ export default function App() {
                 setLocked={setLocked}
                 custom={custom}
                 setCustom={setCustom}
-                setCustom={setCustom}
                 onBack={() => setScreen("groups")}
                 onGenerateReport={generateReport}
                 reportBusy={reportBusy}
                 blackVariant={blackVariant}
                 setBlackVariant={setBlackVariant}
                 showBlackName={showBlackName}
-                setShowBlackName={setShowBlackName}
-                setShowBlackName={setShowBlackName}
-                showBlackName={showBlackName}
-                setShowBlackName={setShowBlackName}
-                setShowBlackName={setShowBlackName}
-                showBlackName={showBlackName}
-                setShowBlackName={setShowBlackName}
                 setShowBlackName={setShowBlackName}
               />
             )}
