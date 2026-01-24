@@ -1114,6 +1114,8 @@ export default function App() {
                 setKnownByGroup={setKnownByGroup}
                 custom={custom}
                 setCustom={setCustom}
+                setCustom={setCustom}
+                setCustom={setCustom}
                 onBack={() => setScreen("version")}
                 onNext={() => setScreen("rank")}
               />
@@ -1128,12 +1130,20 @@ export default function App() {
                 setLocked={setLocked}
                 custom={custom}
                 setCustom={setCustom}
+                setCustom={setCustom}
                 onBack={() => setScreen("groups")}
                 onGenerateReport={generateReport}
                 reportBusy={reportBusy}
                 blackVariant={blackVariant}
                 setBlackVariant={setBlackVariant}
                 showBlackName={showBlackName}
+                setShowBlackName={setShowBlackName}
+                setShowBlackName={setShowBlackName}
+                showBlackName={showBlackName}
+                setShowBlackName={setShowBlackName}
+                setShowBlackName={setShowBlackName}
+                showBlackName={showBlackName}
+                setShowBlackName={setShowBlackName}
                 setShowBlackName={setShowBlackName}
               />
             )}
@@ -1380,7 +1390,7 @@ function GlobalRankScreen({
   }
 
   return (
-    <div className="screen rankScreen">
+    <div className={"screen rankScreen" + (!locked ? " sorting" : "")}>
       <div className="header">
         <button className="iconBtn" onClick={onBack} title="返回">
           ←
@@ -1864,6 +1874,33 @@ function FieldArea({ label, value, onChange, placeholder }) {
 }
 
 function ReportModal({ url, onClose, onRegenerate, busy }) {
+  const [saving, setSaving] = useState(false);
+  const canShare = typeof navigator !== "undefined" && !!navigator.share;
+
+  async function shareToAlbum() {
+    if (!canShare) return;
+    try {
+      setSaving(true);
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const file = new File([blob], "kpop-6th-report.png", { type: blob.type || "image/png" });
+      await navigator.share({ title: "六代金字塔报告", files: [file] });
+    } catch (e) {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function downloadPng() {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "kpop-6th-report.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
   return (
     <div className="modalMask" onMouseDown={onClose}>
       <div className="modal posterModal" onMouseDown={(e) => e.stopPropagation()}>
@@ -1880,15 +1917,19 @@ function ReportModal({ url, onClose, onRegenerate, busy }) {
           </div>
 
           <div className="modalActions">
-            <a className="primary linkBtn" href={url} download="kpop-6th-report.png">
-              保存图片
-            </a>
-            <button className="ghost" onClick={onRegenerate} disabled={busy}>
+            <button className="primary" onClick={canShare ? shareToAlbum : downloadPng} disabled={saving}>
+              {canShare ? (saving ? "打开分享中…" : "保存到相册/分享") : "保存图片"}
+            </button>
+            <button className="ghost" onClick={onRegenerate} disabled={busy || saving}>
               {busy ? "生成中…" : "再生成一张"}
             </button>
           </div>
-
-          <div className="tinyHint">人数多会生成更长竖图，但会保留所有参与者；第4排开始每排固定人数更美观。</div>
+          <div className="tinyHint">
+            {canShare
+              ? "手机上点「保存到相册/分享」会弹出系统分享面板，可选“存储图像/保存到相册”。如果没出现，点右上角…或长按图片也能保存。"
+              : "部分手机浏览器不支持直接写入相册：点“保存图片”会下载到文件/浏览器下载列表，你也可以长按图片选择保存。"}
+            {"  "}人数多会生成更长竖图，但会保留所有参与者；第4排开始每排固定人数更美观。
+          </div>
         </div>
       </div>
     </div>
@@ -2963,6 +3004,37 @@ function Style() {
       .ghost{background: rgba(255,255,255,.60);}
       .linkBtn{display:flex; align-items:center; justify-content:center; text-decoration:none; color: inherit;}
       .tinyHint{margin-top: 10px; font-size:12px; color: rgba(0,0,0,.65);}
+
+      /* ✅ 移动端优化：排序模式更大、更好拖 */
+      @media (max-width: 520px){
+        /* 标题别占太多版面 */
+        .rankScreen .h1{font-size:18px;}
+        .rankScreen .sub{font-size:11px; margin-top:2px;}
+
+        /* 排序模式：让列表尽量占满屏 */
+        .rankScreen.sorting .searchBar,
+        .rankScreen.sorting .miniCard{display:none;}
+        .rankScreen.sorting .header .sub{display:none;}
+        .rankScreen.sorting .h1{font-size:16px;}
+
+        /* 卡片更窄更好拖 */
+        .rowCard{
+          padding: 8px 8px;
+          border-radius: 18px;
+          gap: 8px;
+        }
+        .rankBadge{
+          width:30px;height:30px;
+          border-width:2px;
+          font-size:13px;
+        }
+        .faceBoxBtn{
+          width:46px;height:46px;
+          border-radius:14px;
+        }
+        .rowMeta{margin-top:2px; font-size:11px;}
+        .comment{max-width: 180px;}
+      }
 
       /* 直拍嵌入（第一版体验） */
       .fancamBox{margin: 10px 0 6px; border:3px solid rgba(0,0,0,.14); border-radius: 18px; background: rgba(255,255,255,.55); overflow:hidden;}
