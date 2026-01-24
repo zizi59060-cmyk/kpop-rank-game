@@ -860,17 +860,35 @@ function shuffle(arr) {
 /* ----------------------- Pointer 拖拽排序 + 自动滚动 ----------------------- */
 
 function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onState }) {
-  const dragRef = useRef({ active: false, fromId: null, overId: null, lastClientX: 0, lastClientY: 0, raf: 0 });
+  // 移动端体验目标：
+  // - 轻触/滑动：正常上下滚动列表（不触发拖拽）
+  // - 长按（约 180ms）后再拖：进入排序拖拽
+  // - 拖到容器上下边缘：自动滚动
+  const dragRef = useRef({
+    active: false,
+    pending: false,
+    pointerId: null,
+    fromId: null,
+    overId: null,
+    lastClientX: 0,
+    lastClientY: 0,
+    startX: 0,
+    startY: 0,
+    raf: 0,
+    timer: 0,
+  });
 
-  function reorder(fromId, toId) {
-    if (!fromId || !toId || fromId === toId) return;
+  const LONG_PRESS_MS = 180;
+  const MOVE_CANCEL_PX = 10;
+
+  function reorder(fromId, overId) {
+    if (!fromId || !overId || fromId === overId) return;
     setIds((prev) => {
       const a = [...prev];
-      const f = a.indexOf(fromId);
-      const t = a.indexOf(toId);
-      if (f < 0 || t < 0) return prev;
-      const [picked] = a.splice(f, 1);
-      a.splice(t, 0, picked);
+      const from = a.indexOf(fromId);
+      const to = a.indexOf(overId);
+      if (from < 0 || to < 0) return prev;
+      a.splice(to, 0, a.splice(from, 1)[0]);
       return a;
     });
   }
@@ -910,43 +928,81 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
     const x = st.lastClientX;
     const y = st.lastClientY;
 
-    // 自动滚动
     autoScroll(y);
 
-    // 计算落点并重排
     const over = getOverId(y);
     if (over && over !== st.overId) {
       st.overId = over;
       reorder(st.fromId, over);
     }
 
-    // 每一帧都同步坐标，让拖动跟手
     onState && onState({ active: true, fromId: st.fromId, overId: st.overId, clientX: x, clientY: y });
 
     st.raf = requestAnimationFrame(tick);
   }
 
-  function onPointerDown(e, id) {
-    if (!enabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-
+  function activateDrag(e, id) {
     const st = dragRef.current;
+    if (!enabled || !st.pending) return;
+
+    st.pending = false;
     st.active = true;
     st.fromId = id;
     st.overId = id;
-    st.lastClientX = e.clientX;
-    st.lastClientY = e.clientY;
+
+    // 拖拽期间锁住页面原生滚动（否则会跟拖拽打架）
+    try {
+      document.documentElement.classList.add("dragLock");
+      document.body.classList.add("dragLock");
+    } catch {}
 
     onState && onState({ active: true, fromId: id, overId: id, clientX: st.lastClientX, clientY: st.lastClientY });
 
+    // 捕获指针，让拖动更稳定
     e.currentTarget.setPointerCapture?.(e.pointerId);
 
     if (!st.raf) st.raf = requestAnimationFrame(tick);
   }
 
+  function cancelPending() {
+    const st = dragRef.current;
+    st.pending = false;
+    st.pointerId = null;
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = 0;
+  }
+
+  function onPointerDown(e, id) {
+    if (!enabled) return;
+
+    // 不在这里 preventDefault：让用户可以上下滑动滚动列表
+    // 只有长按后进入拖拽，才会锁滚动并开始排序
+    const st = dragRef.current;
+    st.pointerId = e.pointerId;
+    st.pending = true;
+    st.active = false;
+    st.fromId = id;
+    st.overId = id;
+    st.startX = e.clientX;
+    st.startY = e.clientY;
+    st.lastClientX = e.clientX;
+    st.lastClientY = e.clientY;
+
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(() => activateDrag(e, id), LONG_PRESS_MS);
+  }
+
   function onPointerMove(e) {
     const st = dragRef.current;
+
+    // 长按未触发前：如果手指移动太多，视为“滚动”，取消拖拽意图
+    if (st.pending && !st.active) {
+      const dx = Math.abs(e.clientX - st.startX);
+      const dy = Math.abs(e.clientY - st.startY);
+      if (dx > MOVE_CANCEL_PX || dy > MOVE_CANCEL_PX) cancelPending();
+      return;
+    }
+
     if (!st.active) return;
     st.lastClientX = e.clientX;
     st.lastClientY = e.clientY;
@@ -954,12 +1010,25 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
 
   function end() {
     const st = dragRef.current;
+
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = 0;
+
+    st.pending = false;
     st.active = false;
+    st.pointerId = null;
     st.fromId = null;
     st.overId = null;
+
     onState && onState({ active: false, fromId: null, overId: null, clientX: 0, clientY: 0 });
+
     if (st.raf) cancelAnimationFrame(st.raf);
     st.raf = 0;
+
+    try {
+      document.documentElement.classList.remove("dragLock");
+      document.body.classList.remove("dragLock");
+    } catch {}
   }
 
   useEffect(() => {
@@ -976,6 +1045,7 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
 
   return { onPointerDown };
 }
+
 
 /* ----------------------- App ----------------------- */
 
@@ -1767,8 +1837,6 @@ function ProfileModal({ member, version, blackVariant, showBlackName, onClose, o
               继续排名
             </button>
           </div>
-
-          <div className="tinyHint">✅ 默认头像请放 public/idols/{member.groupId}/{slug(member.cn)}.jpg（分享部署后别人也能看到；海报导出也稳定）</div>
         </div>
       </div>
     </div>
@@ -2562,10 +2630,6 @@ function FancamEmbed({ url, posterUrl, posterFallback, title = "fancam" }) {
           {copied ? "已复制" : "复制链接"}
         </button>
       </div>
-
-      <div className="tinyHint">
-        提示：B站对 iframe 嵌入有时会限制（如 localhost/某些部署环境）。若出现“关闭了连接”，请用“打开B站/打开App”。
-      </div>
     </div>
   );
 }
@@ -2612,6 +2676,8 @@ function Style() {
       }
       *{box-sizing:border-box}
       html,body,#root{height:100%; width:100%;}
+
+      .dragLock{ touch-action: none; }
       body{
         margin:0;
         background: var(--yellow);
@@ -2833,6 +2899,7 @@ function Style() {
       .list.locked{filter: grayscale(.1);}
 
       .rowCard{
+        touch-action: pan-y;
         display:flex;
         align-items:center;
         gap: 10px;
@@ -3005,6 +3072,7 @@ function Style() {
       .linkBtn{display:flex; align-items:center; justify-content:center; text-decoration:none; color: inherit;}
       .tinyHint{margin-top: 10px; font-size:12px; color: rgba(0,0,0,.65);}
 
+
       /* ✅ 移动端优化：排序模式更大、更好拖 */
       @media (max-width: 520px){
         /* 标题别占太多版面 */
@@ -3019,6 +3087,7 @@ function Style() {
 
         /* 卡片更窄更好拖 */
         .rowCard{
+        touch-action: pan-y;
           padding: 8px 8px;
           border-radius: 18px;
           gap: 8px;
@@ -3041,6 +3110,11 @@ function Style() {
       .fancamHead{display:flex; align-items:center; justify-content:space-between; gap:10px; padding: 10px 12px; border-bottom: 3px solid rgba(0,0,0,.12); background: rgba(255,255,255,.60);}
       .fancamTitle{font-weight: 950;}
       .fancamFrame{position:relative; width:100%; aspect-ratio: 16/9; background:#000;}
+      /* 手机端：直拍区域更大（更好拖动/观看） */
+      @media (max-width: 520px){
+        .fancamFrame{aspect-ratio: 4/3;}
+      }
+
       .fancamFrame iframe{position:absolute; inset:0; width:100%; height:100%; border:0;}
       .fancamCover{position:absolute; inset:0; z-index:2; border:0; padding:0; margin:0; width:100%; height:100%; cursor:pointer; background:#000;}
       .fancamCoverImg{width:100%; height:100%; object-fit:cover; display:block;}
