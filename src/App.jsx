@@ -9,7 +9,7 @@
  * - 全屏黄白波点铺满 + 主界面手机居中 + 不露白
  * - 版本选择：安利/锐评
  * - 选团体（锐评版可剔除团体/成员）
- * - 总榜混合排序：按住 ↕ 拖动；拖到边缘自动滚动
+ * - 总榜混合排序：点住卡片即可拖动；拖到边缘自动滚动
  * - 点击头像看资料（不是长按）
  * - 列表显示 安利/锐评 一句话（替代 stars/拖拽文案）
  * - 生成报告：前三排金字塔 1/3/4，第4排起固定每排 N 人（默认6）生成长图；卡片等比缩放；卡片下显示安利/锐评（没填不显示）
@@ -860,26 +860,17 @@ function shuffle(arr) {
 /* ----------------------- Pointer 拖拽排序 + 自动滚动 ----------------------- */
 
 function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onState }) {
-  // 移动端体验目标：
-  // - 轻触/滑动：正常上下滚动列表（不触发拖拽）
-  // - 长按（约 180ms）后再拖：进入排序拖拽
-  // - 拖到容器上下边缘：自动滚动
+  // ✅ 本次修改：排序时「点击卡片即可拖动」，不需要长按。
+  // 为了避免拖拽与页面滚动打架：进入拖拽后会锁住页面原生滚动。
   const dragRef = useRef({
     active: false,
-    pending: false,
     pointerId: null,
     fromId: null,
     overId: null,
     lastClientX: 0,
     lastClientY: 0,
-    startX: 0,
-    startY: 0,
     raf: 0,
-    timer: 0,
   });
-
-  const LONG_PRESS_MS = 180;
-  const MOVE_CANCEL_PX = 10;
 
   function reorder(fromId, overId) {
     if (!fromId || !overId || fromId === overId) return;
@@ -943,9 +934,8 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
 
   function activateDrag(e, id) {
     const st = dragRef.current;
-    if (!enabled || !st.pending) return;
+    if (!enabled) return;
 
-    st.pending = false;
     st.active = true;
     st.fromId = id;
     st.overId = id;
@@ -964,44 +954,28 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
     if (!st.raf) st.raf = requestAnimationFrame(tick);
   }
 
-  function cancelPending() {
-    const st = dragRef.current;
-    st.pending = false;
-    st.pointerId = null;
-    if (st.timer) clearTimeout(st.timer);
-    st.timer = 0;
-  }
-
   function onPointerDown(e, id) {
     if (!enabled) return;
 
-    // 不在这里 preventDefault：让用户可以上下滑动滚动列表
-    // 只有长按后进入拖拽，才会锁滚动并开始排序
+    // ✅ 进入排序：点住就拖（不长按）
+    // 阻止浏览器把这次操作当成滚动/选中文字
+    try {
+      e.preventDefault?.();
+    } catch {}
+
     const st = dragRef.current;
     st.pointerId = e.pointerId;
-    st.pending = true;
     st.active = false;
     st.fromId = id;
     st.overId = id;
-    st.startX = e.clientX;
-    st.startY = e.clientY;
     st.lastClientX = e.clientX;
     st.lastClientY = e.clientY;
 
-    if (st.timer) clearTimeout(st.timer);
-    st.timer = setTimeout(() => activateDrag(e, id), LONG_PRESS_MS);
+    activateDrag(e, id);
   }
 
   function onPointerMove(e) {
     const st = dragRef.current;
-
-    // 长按未触发前：如果手指移动太多，视为“滚动”，取消拖拽意图
-    if (st.pending && !st.active) {
-      const dx = Math.abs(e.clientX - st.startX);
-      const dy = Math.abs(e.clientY - st.startY);
-      if (dx > MOVE_CANCEL_PX || dy > MOVE_CANCEL_PX) cancelPending();
-      return;
-    }
 
     if (!st.active) return;
     st.lastClientX = e.clientX;
@@ -1011,10 +985,6 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
   function end() {
     const st = dragRef.current;
 
-    if (st.timer) clearTimeout(st.timer);
-    st.timer = 0;
-
-    st.pending = false;
     st.active = false;
     st.pointerId = null;
     st.fromId = null;
@@ -1468,7 +1438,7 @@ function GlobalRankScreen({
 
         <div className="titleWrap">
           <div className="h1">颜值总榜排名</div>
-          <div className="sub">按住卡片任意位置拖动（可自动滚动） · 点击头像看资料</div>
+          <div className="sub">点住卡片任意位置即可拖动（可自动滚动） · 点击头像看资料</div>
         </div>
 
         {version === VERSION.RUI && (
@@ -1508,7 +1478,7 @@ function GlobalRankScreen({
       <div className="card miniCard">
         <div className="miniRow">
           <div className="miniTip">
-            <span className="kbd">点“开始排序”</span>后，按住<b>整张卡片</b>上下拖动（头像/⋮ 不会触发拖动）
+            <span className="kbd">点“开始排序”</span>后，点住<b>整张卡片</b>上下拖动（头像/⋮ 不会触发拖动）
           </div>
           <div className="miniBtns">
             <button className="miniBtn" onClick={shuffleNow}>
@@ -1543,7 +1513,12 @@ function GlobalRankScreen({
           return (
             <div
               key={id}
-              className={"rowCard" + (dragState.active && dragState.fromId === id ? " dragging" : "") + (dragState.active && dragState.overId === id && dragState.fromId !== id ? " over" : "")}
+              className={
+                "rowCard" +
+                (!locked ? " draggable" : "") +
+                (dragState.active && dragState.fromId === id ? " dragging" : "") +
+                (dragState.active && dragState.overId === id && dragState.fromId !== id ? " over" : "")
+              }
               onPointerDown={(e) => {
                 if (locked) return;
                 // 只要不是点在按钮/链接上，就允许整卡拖动
@@ -1589,7 +1564,7 @@ function GlobalRankScreen({
 
               <div
                 className={"handle " + (locked ? "disabled" : "")}
-                title="按住拖动排序"
+                title="点住拖动排序"
                 onPointerDown={(e) => onPointerDown(e, id)}
                 role="button"
                 tabIndex={0}
@@ -1754,7 +1729,7 @@ function StartOverlay({ onStart }) {
         <div className="overlayText">
           1）点下面的 <b>开始排序</b>
           <br />
-          2）按住<b>整张卡片</b>上下拖动（拖到边缘会自动滚动）
+          2）点住<b>整张卡片</b>上下拖动（拖到边缘会自动滚动）
           <br />
           3）点击头像看资料，点 ⋮ 写安利/锐评
         </div>
@@ -1812,22 +1787,25 @@ function ProfileModal({ member, version, blackVariant, showBlackName, onClose, o
                 <span className="label">直拍：</span>
                 {member.fancamUrl ? <span>（已支持下方嵌入播放）</span> : <span className="muted">（可在编辑里填写）</span>}
               </div>
-
-              {member.fancamUrl ? (
-                <FancamEmbed
-                  url={member.fancamUrl}
-                  // ✅ 优先使用 B 站视频原封面（见 FancamEmbed 内部自动抓取）
-                  // 如果抓取失败，再退回到你上传的头像/默认头像
-                  posterFallback={member._placeholder}
-                  title={member.cn}
-                />
-              ) : null}
               <div className="profileLine">
                 <span className="label">备注：</span>
                 <span className={member.info ? "" : "muted"}>{member.info || "（可在编辑里填写）"}</span>
               </div>
             </div>
           </div>
+
+          {/* ✅ 直拍播放区全宽显示：不缩进在头像后面 */}
+          {member.fancamUrl ? (
+            <div className="profileFancamFull">
+              <FancamEmbed
+                url={member.fancamUrl}
+                // ✅ 优先使用 B 站视频原封面（见 FancamEmbed 内部自动抓取）
+                // 如果抓取失败，再退回到你上传的头像/默认头像
+                posterFallback={member._placeholder}
+                title={member.cn}
+              />
+            </div>
+          ) : null}
 
           <div className="modalActions">
             <button className="primary" onClick={onEdit}>
@@ -2914,6 +2892,8 @@ function Style() {
         transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease, outline 120ms ease;
         will-change: transform;
       }
+      /* ✅ 排序模式：点击就拖动（禁用卡片自身的 touch 滚动手势，避免与拖拽冲突） */
+      .rowCard.draggable{touch-action:none;}
       .rowCard:active{cursor: grabbing;}
       .list.locked .rowCard{cursor: default;}
 
@@ -3065,6 +3045,9 @@ function Style() {
       .link{color: #0b5; font-weight:950; text-decoration:none;}
       .link:hover{text-decoration:underline;}
 
+      /* ✅ 直拍播放区：全宽显示，不缩进在头像后 */
+      .profileFancamFull{width:100%; margin-top: 10px;}
+
       .modalActions{display:flex; gap: 10px; margin-top: 12px;}
       .primary,.ghost{flex:1; padding: 12px 12px; border-radius: 18px; border:3px solid var(--ink); font-weight:950; cursor:pointer; box-shadow: 0 6px 0 rgba(0,0,0,.10); text-align:center;}
       .primary{background:#C7F9CC;}
@@ -3087,11 +3070,12 @@ function Style() {
 
         /* 卡片更窄更好拖 */
         .rowCard{
-        touch-action: pan-y;
+          touch-action: pan-y;
           padding: 8px 8px;
           border-radius: 18px;
           gap: 8px;
         }
+        .rowCard.draggable{touch-action:none;}
         .rankBadge{
           width:30px;height:30px;
           border-width:2px;
