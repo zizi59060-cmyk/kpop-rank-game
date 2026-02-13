@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * ✅ 本版已包含你提到的全部修改（含最新两点）：
@@ -9,7 +9,7 @@
  * - 全屏黄白波点铺满 + 主界面手机居中 + 不露白
  * - 版本选择：安利/锐评
  * - 选团体（锐评版可剔除团体/成员）
- * - 总榜混合排序：点住卡片即可拖动；拖到边缘自动滚动
+ * - 总榜混合排序：按住 ↕ 拖动；拖到边缘自动滚动
  * - 点击头像看资料（不是长按）
  * - 列表显示 安利/锐评 一句话（替代 stars/拖拽文案）
  * - 生成报告：前三排金字塔 1/3/4，第4排起固定每排 N 人（默认6）生成长图；卡片等比缩放；卡片下显示安利/锐评（没填不显示）
@@ -17,6 +17,15 @@
  */
 
 const VERSION = { ANLI: "anli", RUI: "rui" };
+
+// ✅ BGM：按版本随机播放（把音频文件放到 public/bgm/<version>/ 下）
+// - 支持 .m4a 或 .mp3（建议优先 m4a，你现在就是 m4a）
+// - 文件名需与清单文字一致（允许空格/逗号/中文），例如：public/bgm/anli/love 119.m4a
+const BGM_LIST = {
+  [VERSION.ANLI]: ["If I say, I love you", "love 119", "steady", "plot twist", "insomnia", "firework"],
+  [VERSION.RUI]: ["bnd bgm", "cortis bgm"],
+};
+
 
 const SEED_GROUPS = [
   {
@@ -791,9 +800,96 @@ const MEMBER_TABLE = [
 
 /* ----------------------- 工具函数 ----------------------- */
 
+// ✅ 静态资源路径（兼容：Vercel 根域 / GitHub Pages 子路径 / IPFS 子路径）
+// - 你在代码里写的 `/idols/...`、`/bgm/...` 在“子路径部署”会失效（会指向域名根）
+// - 这里统一把它们转成：BASE_URL + path，并对中文/空格做 URI 编码
+function getPublicBase() {
+  try {
+    // Vite：import.meta.env.BASE_URL（构建时注入）
+    if (typeof import.meta !== "undefined" && import.meta.env && typeof import.meta.env.BASE_URL === "string") {
+      const u = import.meta.env.BASE_URL || "/";
+      return u.endsWith("/") ? u : u + "/";
+    }
+  } catch {}
+  try {
+    // CRA：process.env.PUBLIC_URL（构建时注入）
+    if (typeof process !== "undefined" && process.env && typeof process.env.PUBLIC_URL === "string") {
+      const u = process.env.PUBLIC_URL || "/";
+      return u.endsWith("/") ? u : u + "/";
+    }
+  } catch {}
+  return "/";
+}
+
+function resolveAssetUrl(path) {
+  const s = String(path || "").trim();
+  if (!s) return "";
+  if (/^(data:|blob:|https?:)/i.test(s)) return s; // 外链/内联图不处理
+  const base = getPublicBase(); // always ends with /
+  const clean = s.startsWith("/") ? s.slice(1) : s;
+  return new URL(encodeURI(base + clean), window.location.href).href;
+}
+
 function slug(s) {
   return String(s).trim().replace(/\s+/g, "_").replace(/[\/\\?%*:|"<>]/g, "_");
 }
+
+function encSeg(seg) {
+  return encodeURIComponent(String(seg));
+}
+
+function groupFolderFromLabel(label) {
+  const parts = String(label || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return parts[0] || "";
+  return parts.slice(0, -1).join(" ");
+}
+
+function avatarCandidates(memberOrGroupLabel, cn, version, groupIdOpt) {
+  // ✅ 兼容两种调用：
+  // - avatarCandidates(member, version)
+  // - avatarCandidates(groupLabel, cn, version, groupId)
+  let groupLabel = "";
+  let groupId = "";
+  let nameCn = "";
+
+  if (memberOrGroupLabel && typeof memberOrGroupLabel === "object") {
+    groupLabel = memberOrGroupLabel.groupLabel || "";
+    groupId = memberOrGroupLabel.groupId || "";
+    nameCn = memberOrGroupLabel.cn || cn || "";
+    version = cn || version || VERSION.ANLI; // cn 位置传的是 version
+  } else {
+    groupLabel = String(memberOrGroupLabel || "");
+    groupId = String(groupIdOpt || "");
+    nameCn = String(cn || "");
+    version = version || VERSION.ANLI;
+  }
+
+  const vdir = version === VERSION.RUI ? "rui" : "anli";
+  const name = encSeg(slug(nameCn));
+
+  const folderById = encSeg(groupId);
+  const folderByLabel = encSeg(groupFolderFromLabel(groupLabel));
+
+  const out = [];
+  function pushFolder(folder) {
+    if (!folder) return;
+    // 不要以 / 开头：子路径部署时避免指向域名根
+    out.push(`idols/${folder}/${vdir}/${name}.webp`);
+    out.push(`idols/${folder}/${vdir}/${name}.jpg`);
+    out.push(`idols/${folder}/${name}.webp`);
+    out.push(`idols/${folder}/${name}.jpg`);
+  }
+  pushFolder(folderById);
+  if (folderByLabel && folderByLabel !== folderById) pushFolder(folderByLabel);
+
+  return out;
+}
+
+// 旧名字保留（兼容）
+function avatarCandidatesFromLabel(groupLabel, cn, version) {
+  return avatarCandidates(groupLabel, cn, version, "");
+}
+
 function memberId(groupId, cn) {
   return `${groupId}__${slug(cn)}`;
 }
@@ -860,17 +956,26 @@ function shuffle(arr) {
 /* ----------------------- Pointer 拖拽排序 + 自动滚动 ----------------------- */
 
 function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onState }) {
-  // ✅ 本次修改：排序时「点击卡片即可拖动」，不需要长按。
-  // 为了避免拖拽与页面滚动打架：进入拖拽后会锁住页面原生滚动。
+  // 移动端体验目标：
+  // - 轻触/滑动：正常上下滚动列表（不触发拖拽）
+  // - 长按（约 180ms）后再拖：进入排序拖拽
+  // - 拖到容器上下边缘：自动滚动
   const dragRef = useRef({
     active: false,
+    pending: false,
     pointerId: null,
     fromId: null,
     overId: null,
     lastClientX: 0,
     lastClientY: 0,
+    startX: 0,
+    startY: 0,
     raf: 0,
+    timer: 0,
   });
+
+  const LONG_PRESS_MS = 180;
+  const MOVE_CANCEL_PX = 10;
 
   function reorder(fromId, overId) {
     if (!fromId || !overId || fromId === overId) return;
@@ -934,8 +1039,9 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
 
   function activateDrag(e, id) {
     const st = dragRef.current;
-    if (!enabled) return;
+    if (!enabled || !st.pending) return;
 
+    st.pending = false;
     st.active = true;
     st.fromId = id;
     st.overId = id;
@@ -954,28 +1060,44 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
     if (!st.raf) st.raf = requestAnimationFrame(tick);
   }
 
+  function cancelPending() {
+    const st = dragRef.current;
+    st.pending = false;
+    st.pointerId = null;
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = 0;
+  }
+
   function onPointerDown(e, id) {
     if (!enabled) return;
 
-    // ✅ 进入排序：点住就拖（不长按）
-    // 阻止浏览器把这次操作当成滚动/选中文字
-    try {
-      e.preventDefault?.();
-    } catch {}
-
+    // 不在这里 preventDefault：让用户可以上下滑动滚动列表
+    // 只有长按后进入拖拽，才会锁滚动并开始排序
     const st = dragRef.current;
     st.pointerId = e.pointerId;
+    st.pending = true;
     st.active = false;
     st.fromId = id;
     st.overId = id;
+    st.startX = e.clientX;
+    st.startY = e.clientY;
     st.lastClientX = e.clientX;
     st.lastClientY = e.clientY;
 
-    activateDrag(e, id);
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(() => activateDrag(e, id), LONG_PRESS_MS);
   }
 
   function onPointerMove(e) {
     const st = dragRef.current;
+
+    // 长按未触发前：如果手指移动太多，视为“滚动”，取消拖拽意图
+    if (st.pending && !st.active) {
+      const dx = Math.abs(e.clientX - st.startX);
+      const dy = Math.abs(e.clientY - st.startY);
+      if (dx > MOVE_CANCEL_PX || dy > MOVE_CANCEL_PX) cancelPending();
+      return;
+    }
 
     if (!st.active) return;
     st.lastClientX = e.clientX;
@@ -985,6 +1107,10 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
   function end() {
     const st = dragRef.current;
 
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = 0;
+
+    st.pending = false;
     st.active = false;
     st.pointerId = null;
     st.fromId = null;
@@ -1022,6 +1148,14 @@ function usePointerReorder({ ids, setIds, containerRef, rowRefs, enabled, onStat
 export default function App() {
   const [screen, setScreen] = useState("version"); // version | groups | rank
   const [version, setVersion] = useState(VERSION.ANLI);
+
+  // ✅ BGM：版本选择后随机播放
+  // 说明：手机浏览器禁止“无交互自动播放”，所以我们只在“用户点击选择版本/点按钮”时触发播放
+  const bgmRef = useRef(null); // HTMLAudioElement
+  const lastBgmRef = useRef({ [VERSION.ANLI]: "", [VERSION.RUI]: "" });
+  const [bgmTitle, setBgmTitle] = useState("");
+  const [bgmPlaying, setBgmPlaying] = useState(false);
+
 
   // ✅ 锐评版：全局黑称切换档位（默认第一个）
   const [blackVariant, setBlackVariant] = useState(0);
@@ -1098,6 +1232,93 @@ export default function App() {
     setShowBlackName(false);
   }, [version]);
 
+  function stopBgm() {
+    try {
+      const a = bgmRef.current;
+      if (a) {
+        a.pause();
+        a.currentTime = 0;
+      }
+    } catch {}
+    setBgmPlaying(false);
+  }
+
+  async function playRandomBgm(v) {
+    const list = BGM_LIST[v] || [];
+    if (list.length === 0) return;
+
+    // 尽量不重复上一首
+    const last = lastBgmRef.current?.[v] || "";
+    const candidates = list.filter((x) => x !== last);
+    const pickFrom = candidates.length ? candidates : list;
+    const title = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+    lastBgmRef.current[v] = title;
+
+    // ✅ 你现在的音频是 m4a：优先尝试 .m4a，失败再尝试 .mp3
+    const exts = ["m4a", "mp3"];
+
+    function buildSrc(ext) {
+      // 不要写死 /bgm：子路径部署会失效
+      return resolveAssetUrl(`bgm/${v}/${title}.${ext}`);
+    }
+
+    try {
+      // 换歌前先停掉
+      if (bgmRef.current) bgmRef.current.pause();
+
+      const a = new Audio();
+      a.loop = true;
+      a.volume = 0.55;
+      a.preload = "auto";
+
+      // 事件同步播放状态
+      a.onended = () => setBgmPlaying(false);
+      a.onpause = () => setBgmPlaying(false);
+      a.onplay = () => setBgmPlaying(true);
+
+      // 依次尝试扩展名
+      let ok = false;
+      for (const ext of exts) {
+        const src = buildSrc(ext);
+        // eslint-disable-next-line no-await-in-loop
+        const canLoad = await new Promise((r) => {
+          a.onerror = () => r(false);
+          a.oncanplaythrough = () => r(true);
+          a.src = src;
+          a.load();
+        });
+        if (canLoad) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) return;
+
+      bgmRef.current = a;
+      setBgmTitle(title);
+
+      // ✅ 必须在“用户点击”触发的函数里调用 play()，否则移动端会被拦截
+      await a.play();
+      setBgmPlaying(true);
+    } catch {
+      // 某些浏览器策略可能阻止播放：不报错，不打断流程
+      setBgmPlaying(false);
+    }
+  }
+
+  async function toggleBgm() {
+    try {
+      const a = bgmRef.current;
+      if (!a) {
+        await playRandomBgm(version);
+        return;
+      }
+      if (a.paused) await a.play();
+      else a.pause();
+    } catch {}
+  }
+
+
   async function generateReport() {
     try {
       setReportBusy(true);
@@ -1135,10 +1356,17 @@ export default function App() {
             {screen === "version" && (
               <VersionScreen
                 version={version}
-                onPick={(v) => {
+                bgmTitle={bgmTitle}
+                bgmPlaying={bgmPlaying}
+                onToggleBgm={toggleBgm}
+                onNextBgm={() => playRandomBgm(version)}
+                onPick={async (v) => {
+                  // ✅ 用户点击选择版本 = 交互事件：在这里触发随机播放，移动端才不会拦截
                   setVersion(v);
                   setSelectedGroupIds(new Set(SEED_GROUPS.map((g) => g.id)));
                   setBlackVariant(0);
+                  setShowBlackName(false);
+                  await playRandomBgm(v);
                 }}
                 onNext={() => setScreen("groups")}
               />
@@ -1200,7 +1428,7 @@ export default function App() {
 
 /* ----------------------- Screens ----------------------- */
 
-function VersionScreen({ version, onPick, onNext }) {
+function VersionScreen({ version, onPick, onNext, bgmTitle, bgmPlaying, onToggleBgm, onNextBgm }) {
   return (
     <div className="screen">
       <div className="header">
@@ -1226,6 +1454,27 @@ function VersionScreen({ version, onPick, onNext }) {
             <span className="segHint">中文 + 黑称（可多条）+ 锐评一句话</span>
           </button>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="cardTitle row">
+          <span>BGM</span>
+          <span className={"pill " + (bgmPlaying ? "on" : "")}>{bgmPlaying ? "播放中" : "未播放"}</span>
+        </div>
+
+        <div className="bgmRow">
+          <div className="bgmTitle">{bgmTitle ? `正在播放：${bgmTitle}` : "选择版本后会随机播放一首（需允许播放）"}</div>
+          <div className="bgmBtns">
+            <button className="miniBtn" onClick={onToggleBgm} title="播放/暂停">
+              {bgmPlaying ? "暂停" : "播放"}
+            </button>
+            <button className="miniBtn" onClick={onNextBgm} title="换一首">
+              换一首
+            </button>
+          </div>
+        </div>
+
+        <div className="hint">提示：手机浏览器禁止无交互自动播放，所以请先点一次“安利版/锐评版”触发播放。</div>
       </div>
 
       <div className="spacer" />
@@ -1345,7 +1594,7 @@ function GroupsAllScreen({ version, groups, selectedGroupIds, setSelectedGroupId
             return (
               <label key={id} className={"memberTile " + (checked ? "checked" : "unchecked")}>
                 <input type="checkbox" checked={checked} onChange={() => toggleMember(id)} />
-                <AvatarImg src={m.photoUrl} fallback={m._placeholder} alt={m.cn} className="memberImg" />
+                <AvatarImg srcList={avatarCandidates(m, version)} fallback={m._placeholder} alt={m.cn} className="memberImg" />
                 <div className="memberName">{m.cn}</div>
               </label>
             );
@@ -1438,7 +1687,7 @@ function GlobalRankScreen({
 
         <div className="titleWrap">
           <div className="h1">颜值总榜排名</div>
-          <div className="sub">点住卡片任意位置即可拖动（可自动滚动） · 点击头像看资料</div>
+          <div className="sub">按住卡片任意位置拖动（可自动滚动） · 点击头像看资料</div>
         </div>
 
         {version === VERSION.RUI && (
@@ -1478,7 +1727,7 @@ function GlobalRankScreen({
       <div className="card miniCard">
         <div className="miniRow">
           <div className="miniTip">
-            <span className="kbd">点“开始排序”</span>后，点住<b>整张卡片</b>上下拖动（头像/⋮ 不会触发拖动）
+            <span className="kbd">点“开始排序”</span>后，按住<b>整张卡片</b>上下拖动（头像/⋮ 不会触发拖动）
           </div>
           <div className="miniBtns">
             <button className="miniBtn" onClick={shuffleNow}>
@@ -1513,12 +1762,7 @@ function GlobalRankScreen({
           return (
             <div
               key={id}
-              className={
-                "rowCard" +
-                (!locked ? " draggable" : "") +
-                (dragState.active && dragState.fromId === id ? " dragging" : "") +
-                (dragState.active && dragState.overId === id && dragState.fromId !== id ? " over" : "")
-              }
+              className={"rowCard" + (dragState.active && dragState.fromId === id ? " dragging" : "") + (dragState.active && dragState.overId === id && dragState.fromId !== id ? " over" : "")}
               onPointerDown={(e) => {
                 if (locked) return;
                 // 只要不是点在按钮/链接上，就允许整卡拖动
@@ -1541,7 +1785,7 @@ function GlobalRankScreen({
                 onClick={() => setProfileOpenId(id)}
                 title="点击查看资料"
               >
-                <AvatarImg src={m.photoUrl} fallback={m._placeholder} alt={m.cn} className="faceImg" />
+                <AvatarImg srcList={avatarCandidates(m, version)} fallback={m._placeholder} alt={m.cn} className="faceImg" />
               </button>
 
               <div className="rowText">
@@ -1564,7 +1808,7 @@ function GlobalRankScreen({
 
               <div
                 className={"handle " + (locked ? "disabled" : "")}
-                title="点住拖动排序"
+                title="按住拖动排序"
                 onPointerDown={(e) => onPointerDown(e, id)}
                 role="button"
                 tabIndex={0}
@@ -1676,14 +1920,34 @@ function GlobalRankScreen({
 
 /* ----------------------- Modal & Components ----------------------- */
 
-function AvatarImg({ src, fallback, alt, className }) {
+function AvatarImg({ src, srcList, fallback, alt, className, loading = "lazy" }) {
+  // ✅ 候选图依次尝试；同时把路径统一过一遍 resolveAssetUrl，避免子路径部署/中文路径导致加载失败
+  const rawList = Array.isArray(srcList) ? srcList.filter(Boolean) : src ? [src] : [];
+  const list = rawList.map((u) => resolveAssetUrl(u));
+  const fb = resolveAssetUrl(fallback);
+
+  const [idx, setIdx] = React.useState(0);
+
+  // srcList 变化时重置尝试序号
+  React.useEffect(() => setIdx(0), [rawList.join("|")]); // eslint-disable-line
+
+  const current = list[idx] || "";
+
   return (
     <img
       className={className}
-      src={src}
+      src={current || fb}
       alt={alt}
+      loading={loading}
+      decoding="async"
+      fetchpriority="low"
       onError={(e) => {
-        if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+        // 依次尝试候选图；都失败再用 placeholder
+        if (idx < list.length - 1) {
+          setIdx((v) => v + 1);
+        } else if (e.currentTarget.src !== fb) {
+          e.currentTarget.src = fb;
+        }
       }}
     />
   );
@@ -1729,7 +1993,7 @@ function StartOverlay({ onStart }) {
         <div className="overlayText">
           1）点下面的 <b>开始排序</b>
           <br />
-          2）点住<b>整张卡片</b>上下拖动（拖到边缘会自动滚动）
+          2）按住<b>整张卡片</b>上下拖动（拖到边缘会自动滚动）
           <br />
           3）点击头像看资料，点 ⋮ 写安利/锐评
         </div>
@@ -1769,7 +2033,7 @@ function ProfileModal({ member, version, blackVariant, showBlackName, onClose, o
 
         <div className="modalBody">
           <div className="profileTop">
-            <AvatarImg src={member.photoUrl} fallback={member._placeholder} alt={member.cn} className="profileImg" />
+            <AvatarImg srcList={avatarCandidates(member, version)} fallback={member._placeholder} alt={member.cn} className="profileImg" />
             <div className="profileInfo">
               <div className="profileLine">
                 <span className="label">团体：</span>
@@ -1787,25 +2051,22 @@ function ProfileModal({ member, version, blackVariant, showBlackName, onClose, o
                 <span className="label">直拍：</span>
                 {member.fancamUrl ? <span>（已支持下方嵌入播放）</span> : <span className="muted">（可在编辑里填写）</span>}
               </div>
+
+              {member.fancamUrl ? (
+                <FancamEmbed
+                  url={member.fancamUrl}
+                  // ✅ 优先使用 B 站视频原封面（见 FancamEmbed 内部自动抓取）
+                  // 如果抓取失败，再退回到你上传的头像/默认头像
+                  posterFallback={member._placeholder}
+                  title={member.cn}
+                />
+              ) : null}
               <div className="profileLine">
                 <span className="label">备注：</span>
                 <span className={member.info ? "" : "muted"}>{member.info || "（可在编辑里填写）"}</span>
               </div>
             </div>
           </div>
-
-          {/* ✅ 直拍播放区全宽显示：不缩进在头像后面 */}
-          {member.fancamUrl ? (
-            <div className="profileFancamFull">
-              <FancamEmbed
-                url={member.fancamUrl}
-                // ✅ 优先使用 B 站视频原封面（见 FancamEmbed 内部自动抓取）
-                // 如果抓取失败，再退回到你上传的头像/默认头像
-                posterFallback={member._placeholder}
-                title={member.cn}
-              />
-            </div>
-          ) : null}
 
           <div className="modalActions">
             <button className="primary" onClick={onEdit}>
@@ -2043,9 +2304,19 @@ async function drawPosterLongGrid({ version, rankingIds, custom, selectedGroupCo
 
   const imgs = await Promise.all(
     rankingIds.map(async (id) => {
-      const url = custom[id]?.photoUrl || "";
-      const fallback = custom[id]?._placeholder || placeholderAvatar(id);
-      const img = await loadImageSafe(url);
+      const m = custom[id] || {};
+      const fallback = m._placeholder || placeholderAvatar(id);
+
+      // ✅ 总榜海报头像：优先使用编辑里保存的 photoUrl，其次尝试候选路径（兼容 groupId/团体名文件夹 + anli/rui 分版本）
+      const candidates = [m.photoUrl, ...avatarCandidates(m, version)].filter(Boolean);
+
+      let img = null;
+      for (const u of candidates) {
+        // eslint-disable-next-line no-await-in-loop
+        img = await loadImageSafe(u);
+        if (img) break;
+      }
+
       return { id, img, fallback };
     })
   );
@@ -2304,14 +2575,35 @@ function drawTwoLineEllipsis(ctx, text, x, y, maxWidth, lineHeight) {
   if (line1) ctx.fillText(line1, x, y);
   if (line2) ctx.fillText(line2, x, y + lineHeight);
 }
-function loadImageSafe(url) {
+function loadImageSafe(url, timeoutMs = 12000) {
   return new Promise((resolve) => {
-    if (!url) return resolve(null);
+    const u0 = String(url || "").trim();
+    if (!u0) return resolve(null);
+
+    const u = resolveAssetUrl(u0);
+
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = url;
+
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      resolve(val);
+    };
+
+    const t = window.setTimeout(() => finish(null), timeoutMs);
+
+    img.onload = () => {
+      window.clearTimeout(t);
+      finish(img);
+    };
+    img.onerror = () => {
+      window.clearTimeout(t);
+      finish(null);
+    };
+
+    img.src = u;
   });
 }
 
@@ -2718,6 +3010,12 @@ function Style() {
         box-shadow: 0 2px 0 rgba(0,0,0,.08);
         font-size:12px;
       }
+      .pill.on{
+        background: rgba(167,243,208,.75);
+      }
+      .bgmRow{display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap;}
+      .bgmTitle{font-weight:800; color: rgba(0,0,0,.78);}
+      .bgmBtns{display:flex; gap:8px; align-items:center;}
 
       .screen{
         height: calc(100% - 34px);
@@ -2892,8 +3190,6 @@ function Style() {
         transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease, outline 120ms ease;
         will-change: transform;
       }
-      /* ✅ 排序模式：点击就拖动（禁用卡片自身的 touch 滚动手势，避免与拖拽冲突） */
-      .rowCard.draggable{touch-action:none;}
       .rowCard:active{cursor: grabbing;}
       .list.locked .rowCard{cursor: default;}
 
@@ -3045,9 +3341,6 @@ function Style() {
       .link{color: #0b5; font-weight:950; text-decoration:none;}
       .link:hover{text-decoration:underline;}
 
-      /* ✅ 直拍播放区：全宽显示，不缩进在头像后 */
-      .profileFancamFull{width:100%; margin-top: 10px;}
-
       .modalActions{display:flex; gap: 10px; margin-top: 12px;}
       .primary,.ghost{flex:1; padding: 12px 12px; border-radius: 18px; border:3px solid var(--ink); font-weight:950; cursor:pointer; box-shadow: 0 6px 0 rgba(0,0,0,.10); text-align:center;}
       .primary{background:#C7F9CC;}
@@ -3070,12 +3363,11 @@ function Style() {
 
         /* 卡片更窄更好拖 */
         .rowCard{
-          touch-action: pan-y;
+        touch-action: pan-y;
           padding: 8px 8px;
           border-radius: 18px;
           gap: 8px;
         }
-        .rowCard.draggable{touch-action:none;}
         .rankBadge{
           width:30px;height:30px;
           border-width:2px;
